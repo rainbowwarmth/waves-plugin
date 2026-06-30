@@ -258,8 +258,9 @@
     </div>
 
     <script>
-        const pathParts = window.location.pathname.split('/');
+        const pathParts = window.location.pathname.split('/').filter(p => p);
         const sessionId = pathParts[pathParts.length - 1];
+        const basePath = window.location.pathname.includes('/waves-plugin/') ? '/waves-plugin' : '';
 
         let smsCountdown = 0;
         let smsTimer = null;
@@ -296,7 +297,7 @@
             hideStatus();
 
             try {
-                const resp = await fetch(`/cloudlogin/sms/${sessionId}`, {
+                const resp = await fetch(`${basePath}/cloudlogin/sms/${sessionId}`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ phone })
@@ -348,7 +349,7 @@
             showStatus('正在登录云鸣潮，请稍候...', 'loading');
 
             try {
-                const resp = await fetch(`/cloudlogin/${sessionId}`, {
+                const resp = await fetch(`${basePath}/cloudlogin/${sessionId}`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ phone, code })

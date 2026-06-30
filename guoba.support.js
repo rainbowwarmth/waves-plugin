@@ -225,6 +225,12 @@ export function supportGuoba() {
           component: "Switch",
         },
         {
+          field: "config.isTRSS",
+          label: "使用TRSS模式",
+          bottomHelpMessage: "开启后将共享TRSS端口，使用Bot.express注册中间件",
+          component: "Switch",
+        },
+        {
           field: "config.allow_group_token_display",
           label: "允许群显示token",
           bottomHelpMessage: "是否允许群显示token",
