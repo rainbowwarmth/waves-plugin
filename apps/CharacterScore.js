@@ -167,6 +167,7 @@ function extractPhantomDataFromOCR(rawText) {
         [/發/g, ''],
         [/延迟/g, ''],
         [/今/g, ''],
+        [/裝/g, ''],
         [/葱/g, ''],
         [/派/g, ''],
         [/素/g, ''],
