@@ -3,6 +3,7 @@ import path from 'path';
 import Config from '../components/Config.js';
 
 export default class HaixuRankUtil {
+
     static getRankDataPath() {
         const pluginResources = path.join(process.cwd(), 'plugins', 'waves-plugin', 'resources');
         return {
@@ -112,18 +113,14 @@ export default class HaixuRankUtil {
     static async syncToAllGroups(uid, score, playerInfo, seasonEndTime = 0, isPublicCookie = false) {
         const paths = this.getRankDataPath();
         const groupsDir = path.join(paths.basePath, 'groups');
-
         if (!fs.existsSync(groupsDir)) return;
-
         try {
             const groupDirs = fs.readdirSync(groupsDir);
             for (const groupDirName of groupDirs) {
                 if (!groupDirName.startsWith('group_')) continue;
                 const groupDirPath = path.join(groupsDir, groupDirName);
                 if (!fs.statSync(groupDirPath).isDirectory()) continue;
-
                 const groupId = groupDirName.substring('group_'.length);
-
                 const rankFilePath = path.join(groupDirPath, 'haixu.json');
                 if (fs.existsSync(rankFilePath)) {
                     if (this.checkUidInFile(rankFilePath, uid, seasonEndTime)) {
@@ -177,14 +174,17 @@ export default class HaixuRankUtil {
         if (!season) {
             season = {
                 seasonKey,
-                endTime: seasonEndTime || 0,
+                endTime: seasonEndTime || now,
                 rankData: []
             };
             seasonData.seasons.push(season);
+        } else if (seasonEndTime && season.endTime !== seasonEndTime) {
+            season.endTime = seasonEndTime;
         }
 
         const rankData = season.rankData;
         let userEntry = rankData.find(entry => String(entry.uid) === String(uid));
+
         if (!userEntry) {
             userEntry = {
                 uid: String(uid),
@@ -211,7 +211,6 @@ export default class HaixuRankUtil {
         }
 
         this.cleanupSeasons(seasonData);
-
         this.writeSeasonFile(filePath, seasonData);
     }
 
@@ -223,8 +222,8 @@ export default class HaixuRankUtil {
         try {
             const seasonData = this.readSeasonFile(filePath);
             const sortedSeasons = [...seasonData.seasons].sort((a, b) => (b.endTime || 0) - (a.endTime || 0));
-
             const targetSeason = sortedSeasons[seasonOffset];
+
             if (!targetSeason) {
                 return { topList: [], currentUserEntries: [], totalCount: 0, totalPages: 0, seasonInfo: null };
             }
