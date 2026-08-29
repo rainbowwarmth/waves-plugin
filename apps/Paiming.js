@@ -13,7 +13,7 @@ export class CharacterRanking extends plugin {
             priority: 1010,
             rule: [
                 {
-                    reg: "^(?:～|~|鸣潮)(?!(?:开启|关闭))(.*?)(总)?(?:排行|排名|排名榜|排行榜)$",
+                    reg: "^(?:～|~|鸣潮)(?!(?:开启|关闭))(.*?)(总)?(?:排行|排名|排名榜|排行榜)([1-5])?$",
                     fnc: "characterRank"
                 },
                 {
@@ -81,6 +81,7 @@ export class CharacterRanking extends plugin {
         
         const charName = matchResult[1].trim();
         const isGlobal = matchResult[2] === "总";
+        const page = matchResult[3] ? parseInt(matchResult[3]) : 1;
         const groupId = e.isGroup ? e.group_id : 'private';
         
         if (!charName) return e.reply('请输入角色名称，例如：~安可排名');
@@ -98,7 +99,7 @@ export class CharacterRanking extends plugin {
             let name = await wiki.getAlias(charName);
             
             if (name.includes('漂泊者')) {
-                const attributeMatch = charName.match(/(湮灭|衍射|气动)/);
+                const attributeMatch = charName.match(/(湮灭|衍射|导电|气动|热熔|冷凝)/);
                 name = attributeMatch ? `漂泊者${attributeMatch[0]}` : '漂泊者湮灭';
             }
             
@@ -108,14 +109,21 @@ export class CharacterRanking extends plugin {
                 this.getGlobalRankFilePath(name) : 
                 this.getGroupRankFilePath(groupId, name);
             
-            const rankResult = this.loadRankData(filePath, currentUserUIDs);
+            const rankResult = this.loadRankData(filePath, currentUserUIDs, page);
             const rankData = rankResult.topList;
-            const currentUserEntry = rankResult.currentUserEntry;
-            const currentUserInRank = rankData.some(entry => entry.isCurrentUser);
+            const currentUserEntries = rankResult.currentUserEntries || [];
+            const currentUserInRankUids = new Set(
+                rankData.filter(entry => entry.isCurrentUser).map(entry => String(entry.uid))
+            );
+            
+            if (rankResult.totalCount > 0 && rankData.length === 0) {
+                return e.reply(`「${name}」${isGlobal ? '总' : '群'}排名最多只有 ${rankResult.totalPages} 页（共 ${rankResult.totalCount} 人），请输入 1-${rankResult.totalPages} 之间的页码`);
+            }
             
             let imageCard = await this.generateRankImage(
                 e, name, rankData, isGlobal ? '总' : '群',
-                currentUserUIDs, currentUserInRank, currentUserEntry
+                currentUserUIDs, currentUserInRankUids, currentUserEntries,
+                page, rankResult.totalPages, rankResult.totalCount
             );
             
             await e.reply(imageCard);
@@ -126,47 +134,52 @@ export class CharacterRanking extends plugin {
         return true;
     }
 
-    loadRankData(filePath, currentUserUIDs = []) {
+    loadRankData(filePath, currentUserUIDs = [], page = 1) {
         if (!fs.existsSync(filePath)) {
-            return { topList: [], currentUserEntry: null };
+            return { topList: [], currentUserEntries: [], totalCount: 0, totalPages: 0 };
         }
         
         try {
             const rawData = JSON.parse(fs.readFileSync(filePath, 'utf8'));
             const sortedData = rawData.sort((a, b) => b.score - a.score);
+            const totalCount = sortedData.length;
+            const pageSize = 20;
+            const maxPages = 5;
+            const totalPages = Math.min(Math.ceil(totalCount / pageSize), maxPages);
+
+            const uidStrSet = currentUserUIDs.map(uid => String(uid));
             
-            const topList = sortedData.slice(0, 20).map((entry, index) => ({
-                rank: index + 1,
+            const startIndex = (page - 1) * pageSize;
+            const topList = sortedData.slice(startIndex, startIndex + pageSize).map((entry, index) => ({
+                rank: startIndex + index + 1,
                 score: entry.score.toFixed(2),
                 uid: entry.uid,
                 charInfo: entry.charInfo,
-                isCurrentUser: currentUserUIDs.includes(entry.uid)
+                isCurrentUser: uidStrSet.includes(String(entry.uid))
             }));
             
-            let currentUserEntry = null;
+            let currentUserEntries = [];
             for (let i = 0; i < sortedData.length; i++) {
                 const entry = sortedData[i];
-                if (currentUserUIDs.includes(entry.uid)) {
+                if (uidStrSet.includes(String(entry.uid))) {
                     const rankDisplay = i < 100 ? i + 1 : "100+";
-                    currentUserEntry = { ...entry, rank: rankDisplay, score: entry.score.toFixed(2), isCurrentUser: true };
-                    break;
+                    currentUserEntries.push({ ...entry, rank: rankDisplay, score: entry.score.toFixed(2), isCurrentUser: true });
                 }
             }
             
-            return { topList, currentUserEntry };
+            return { topList, currentUserEntries, totalCount, totalPages };
         } catch (err) {
             logger.error(`[角色声骸排名] 解析排名文件错误: ${err.stack}`);
-            return { topList: [], currentUserEntry: null };
+            return { topList: [], currentUserEntries: [], totalCount: 0, totalPages: 0 };
         }
     }
 
-    async generateRankImage(e, charName, rankData, rankType, currentUserUIDs, currentUserInRank, currentUserEntry) {
+    async generateRankImage(e, charName, rankData, rankType, currentUserUIDs, currentUserInRankUids, currentUserEntries, currentPage = 1, totalPages = 0, totalCount = 0) {
         try {
-            const roleList = rankData.map(entry => {
+            const buildRowData = (entry) => {
                 const charInfo = entry.charInfo || {};
                 const weaponInfo = charInfo.weapon || {};
                 const phantomInfo = charInfo.phantom || {};
-                
                 return {
                     rank: entry.rank,
                     level: charInfo.level || 0,
@@ -193,43 +206,14 @@ export class CharacterRanking extends plugin {
                     uid: entry.uid,
                     isCurrentUser: entry.isCurrentUser
                 };
-            });
+            };
 
-            let showCurrentUserRow = false;
-            let currentUserRow = null;
-            
-            if (!currentUserInRank && currentUserEntry) {
-                showCurrentUserRow = true;
-                const charInfo = currentUserEntry.charInfo || {};
-                const weaponInfo = charInfo.weapon || {};
-                const phantomInfo = charInfo.phantom || {};
-                
-                currentUserRow = {
-                    rank: currentUserEntry.rank,
-                    level: charInfo.level || 0,
-                    chainCount: charInfo.chainCount || 0,
-                    roleName: charInfo.roleName || '未知角色',
-                    roleIconUrl: charInfo.roleIcon || "",
-                    weaponData: {
-                        level: weaponInfo.level || 0,
-                        resonLevel: weaponInfo.resonLevel || 0,
-                        weapon: {
-                            weaponName: weaponInfo.name || "未知武器",
-                            iconUrl: weaponInfo.icon || ""
-                        }
-                    },
-                    phantomData: {
-                        statistic: {
-                            totalScore: parseFloat(currentUserEntry.score) || 0,
-                            rank: phantomInfo.rank || 'N',
-                            color: phantomInfo.color || "#a0a0a0"
-                        },
-                        equipPhantomList: (phantomInfo.icon || charInfo.phantomIcon) ?
-                            [{ phantomProp: { iconUrl: phantomInfo.icon || charInfo.phantomIcon } }] : []
-                    },
-                    uid: currentUserEntry.uid,
-                    isCurrentUser: true
-                };
+            const roleList = rankData.map(buildRowData);
+
+            const currentUserRows = [];
+            for (const entry of currentUserEntries) {
+                if (currentUserInRankUids.has(String(entry.uid))) continue;
+                currentUserRows.push(buildRowData({ ...entry, isCurrentUser: true }));
             }
             
             return await Render.render('Template/ranking/charRankFull', {
@@ -238,8 +222,11 @@ export class CharacterRanking extends plugin {
                 updateTime: new Date().toLocaleString('zh-CN'),
                 rankType,
                 pluginResources: this.pluginResources,
-                showCurrentUserRow,
-                currentUserRow
+                showCurrentUserRow: currentUserRows.length > 0,
+                currentUserRows,
+                currentPage,
+                totalPages,
+                totalCount
             }, { e, retType: 'base64' });
         } catch (err) {
             logger.error(`[角色声骸排名] 生成排名图片错误: ${err.stack}`);
@@ -386,7 +373,11 @@ export class CharacterRanking extends plugin {
         } else {
             const key = `Yunzai:waves:ranking_reject_public:${id}`;
             const value = await redis.get(key);
-            return value === '0';
+            if (value !== null) {
+                return value === '0';
+            }
+            const config = Config.getConfig();
+            return config.ranking_reject_public_cookie_group === false;
         }
     }
 
@@ -403,9 +394,8 @@ export class CharacterRanking extends plugin {
         // 群排名状态
         if (e.isGroup) {
             const groupId = e.group_id;
-            const key = `Yunzai:waves:ranking_reject_public:${groupId}`;
-            const value = await redis.get(key);
-            const groupStrict = value !== '0';
+            const allowPublic = await CharacterRanking.isAllowPublicCookie(groupId, 'group');
+            const groupStrict = !allowPublic;
             const groupStatus = groupStrict ? '严格模式（仅~登录）' : '宽松模式（允许未~登录）';
             msg += `本群排名：${groupStatus}\n`;
         } else {

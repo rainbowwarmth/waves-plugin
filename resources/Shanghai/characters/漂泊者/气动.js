@@ -1,6 +1,6 @@
-import { calcSingleDamage, calcSingleHeal } from '../../../utils/damage/formula.js';
-import { getPercentAttr, normalizeRoleDetailData } from '../../../utils/damage/parser.js';
-import { mergeBuff } from '../../../utils/damage/buff.js';
+import { calcSingleDamage } from '../../../../utils/damage/formula.js';
+import { getPercentAttr, normalizeRoleDetailData } from '../../../../utils/damage/parser.js';
+import { mergeBuff } from '../../../../utils/damage/buff.js';
 
 function getSkillLevel(roleDetailData, typeName) {
   const data = normalizeRoleDetailData(roleDetailData);
@@ -15,13 +15,13 @@ const levelMap = (...values) => values.reduce((map, value, index) => {
 }, {});
 
 // =============================================================
-// 漂泊者-女-气动
+// 漂泊者-气动
 // 数据来源：库街区 Wiki entryId=1353293318050545664
 // 自动从「角色养成 / 技能介绍」倍率表生成，展示倍率最高的 3 个代表输出项。
 // =============================================================
 const WIKI_DETAIL = {
   "id": "1353293318050545664",
-  "name": "漂泊者-女-气动",
+  "name": "漂泊者-气动",
   "orgFullName": "角色组 > 共鸣者",
   "lastUpdateTime": "2026-02-05",
   "currentVersion": "21.0"

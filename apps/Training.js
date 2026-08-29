@@ -6,13 +6,7 @@ import Render from '../components/Render.js';
 import RankUtil from '../utils/RankUtil.js';
 import { CharacterRanking } from './Paiming.js';
 
-// 漂泊者属性ID映射
-const WAVERIDER_ATTRIBUTES = {
-    '1604': '湮灭', '1605': '湮灭',
-    '1501': '衍射', '1502': '衍射',
-    '1309': '导电', '1310': '导电',
-    '1406': '气动', '1408': '气动'
-};
+import { WAVERIDER_ATTRIBUTES } from '../utils/damage/waveriderMap.js';
 
 export class Training extends plugin {
     constructor() {
@@ -52,31 +46,47 @@ export class Training extends plugin {
                 waves.getRoleData(serverId, uid, token, did)
             ]);
 
-            if (!baseData.status || !roleData.status) {
-                data.push({ message: baseData.msg || roleData.msg });
+            if (!roleData.status) {
+                data.push({ message: roleData.msg });
                 return;
             }
 
-            const Promises = roleData.data.roleList.map(role =>
-                waves.getRoleDetail(serverId, uid, role.roleId, token, did).then(data =>
-                    data.status && data.data.role ? { ...role, ...data.data } : null
-                )
+            const baseDataResult = baseData.status ? baseData.data : { id: uid };
+
+            const detailPromises = roleData.data.roleList.map(role =>
+                waves.getRoleDetail(serverId, uid, role.roleId, token, did).then(detail => ({
+                    role,
+                    detail
+                }))
             );
 
-            const roleList = (await Promise.all(Promises)).filter(Boolean).map(role => {
-                const calculatedRole = new WeightCalculator(role).calculate();
-                calculatedRole.chainCount = calculatedRole.chainList.filter(chain => chain.unlocked).length;
-                
-                // 处理漂泊者角色名
-                if (calculatedRole.roleName === '漂泊者') {
-                    const attribute = WAVERIDER_ATTRIBUTES[calculatedRole.roleId];
-                    if (attribute) {
-                        calculatedRole.roleName = `漂泊者${attribute}`;
+            const detailResults = await Promise.all(detailPromises);
+            const roleList = detailResults
+                .filter(({ detail }) => detail.status && detail.data.role)
+                .map(({ role, detail }) => {
+                    const calculatedRole = new WeightCalculator({ ...role, ...detail.data }).calculate();
+                    calculatedRole.chainCount = calculatedRole.chainList.filter(chain => chain.unlocked).length;
+
+                    // 处理漂泊者角色名
+                    if (calculatedRole.roleName === '漂泊者') {
+                        const attribute = WAVERIDER_ATTRIBUTES[calculatedRole.roleId];
+                        if (attribute) {
+                            calculatedRole.roleName = `漂泊者${attribute}`;
+                        }
                     }
+
+                    return calculatedRole;
+                });
+
+            if (roleList.length === 0) {
+                const networkError = detailResults.find(({ detail }) => !detail.status && detail.msg && detail.msg.includes('疑似网络问题'));
+                if (networkError) {
+                    data.push({ message: networkError.detail.msg });
+                    return;
                 }
-                
-                return calculatedRole;
-            });
+                data.push({ message: `UID: ${uid} 未获取到任何角色详情数据，请检查库街区数据终端中角色详情板块的对外展示开关是否打开` });
+                return;
+            }
             
             await Promise.all(roleList.map(async (role) => {
                 const phantomScore = role?.phantomData?.statistic?.totalScore || 0;
@@ -147,7 +157,7 @@ export class Training extends plugin {
             });
 
             const imageCard = await Render.render('Template/training/training', {
-                baseData: baseData.data,
+                baseData: baseDataResult,
                 roleList,
             }, { e, retType: 'base64' });
 

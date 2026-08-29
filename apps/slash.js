@@ -2,6 +2,9 @@ import plugin from '../../../lib/plugins/plugin.js';
 import Waves from "../components/Code.js";
 import Config from "../components/Config.js";
 import Render from '../components/Render.js';
+import HaixuRankUtil from '../utils/HaixuRankUtil.js';
+import { HaixuRanking } from './HaixuRanking.js';
+import sharp from 'sharp';
 
 export class Slash extends plugin {
     constructor() {
@@ -15,6 +18,71 @@ export class Slash extends plugin {
                 fnc: 'slash'
             }]
         });
+    }
+
+    extractImageBuffer(input) {
+        if (!input) return null;
+        if (typeof input === 'string') {
+            let str = input;
+            if (str.startsWith('base64://')) str = str.slice(9);
+            const m = str.match(/^data:image\/\w+;base64,(.+)$/);
+            if (m) str = m[1];
+            if (/^[A-Za-z0-9+/\n\r]+=*$/.test(str) && str.length > 100) {
+                return Buffer.from(str, 'base64');
+            }
+            return null;
+        }
+        if (typeof input === 'object') {
+            if (Buffer.isBuffer(input.file)) return input.file;
+            if (Buffer.isBuffer(input.data?.file)) return input.data.file;
+            const paths = [['file'], ['data', 'file'], ['url'], ['data', 'url'], ['src'], ['data', 'src'], ['image'], ['base64']];
+            for (const path of paths) {
+                try {
+                    let val = input;
+                    for (const key of path) { val = val?.[key]; if (val === undefined || val === null) break; }
+                    if (Buffer.isBuffer(val)) return val;
+                    if (typeof val === 'string') {
+                        let str = val;
+                        if (str.startsWith('base64://')) str = str.slice(9);
+                        const m = str.match(/^data:image\/\w+;base64,(.+)$/);
+                        if (m) str = m[1];
+                        if (/^[A-Za-z0-9+/\n\r]+=*$/.test(str) && str.length > 100) return Buffer.from(str, 'base64');
+                    }
+                } catch (e) {}
+            }
+            try {
+                for (const k1 in input) {
+                    const v1 = input[k1];
+                    if (Buffer.isBuffer(v1)) return v1;
+                    if (v1 && typeof v1 === 'object') {
+                        for (const k2 in v1) { if (Buffer.isBuffer(v1[k2])) return v1[k2]; }
+                    }
+                }
+            } catch (e) {}
+        }
+        return null;
+    }
+
+    async concatImagesHorizontal(buffers) {
+        if (buffers.length === 0) return null;
+        if (buffers.length === 1) return { type: 'image', file: `base64://${buffers[0].toString('base64')}` };
+
+        const metadatas = await Promise.all(buffers.map(buf => sharp(buf).metadata()));
+        const maxHeight = Math.round(Math.max(...metadatas.map(m => m.height || 0)));
+        const totalWidth = Math.round(metadatas.reduce((sum, m) => sum + (m.width || 0), 0));
+
+        const composites = [];
+        let xOffset = 0;
+        for (let i = 0; i < buffers.length; i++) {
+            composites.push({ input: buffers[i], left: Math.round(xOffset), top: 0 });
+            xOffset += metadatas[i].width || 0;
+        }
+
+        const result = await sharp({
+            create: { width: totalWidth, height: maxHeight, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } }
+        }).composite(composites).png().toBuffer();
+
+        return { type: 'image', file: `base64://${result.toString('base64')}` };
     }
 
     async slash(e) {
@@ -60,16 +128,18 @@ export class Slash extends plugin {
             }
         }
 
-        let data = [];
+        let errorMessages = [];
         let deleteroleId = [];
+        let imageBuffers = [];
+        let rawImageCards = [];
 
-        await Promise.all(accountList.map(async (account) => {
+        for (const account of accountList) {
             const usability = await waves.isAvailable(account.serverId, account.roleId, account.token);
 
             if (!usability) {
-                data.push({ message: `账号 ${account.roleId} 的Token已失效\n请重新登录Token` });
+                errorMessages.push(`账号 ${account.roleId} 的Token已失效\n请重新登录Token`);
                 deleteroleId.push(account.roleId);
-                return;
+                continue;
             }
 
             try {
@@ -80,26 +150,26 @@ export class Slash extends plugin {
 
                 if (!baseData?.status || !slashData?.status) {
                     const errorMsg = baseData?.msg || slashData?.msg || '获取数据失败';
-                    data.push({ message: `账号 ${account.roleId} ${errorMsg}` });
-                    return;
+                    errorMessages.push(`账号 ${account.roleId} ${errorMsg}`);
+                    continue;
                 }
 
                 if (!slashData.data || !slashData.data.difficultyList || 
                     !Array.isArray(slashData.data.difficultyList) || 
                     slashData.data.difficultyList.length === 0) {
-                    data.push({ message: `账号 ${account.roleId} 没有可用的海墟数据` });
-                    return;
+                    errorMessages.push(`账号 ${account.roleId} 没有可用的海墟数据`);
+                    continue;
                 }
 
                 if (slashData.data.isUnlock === false) {
-                    data.push({ message: `账号 ${account.roleId} 尚未解锁冥歌海墟` });
-                    return;
+                    errorMessages.push(`账号 ${account.roleId} 尚未解锁冥歌海墟`);
+                    continue;
                 }
 
                 const renderData = await this.formatData(slashData.data, baseData.data, type, e, false);
                 if (!renderData) {
-                    data.push({ message: `账号 ${account.roleId} 数据格式化失败` });
-                    return;
+                    errorMessages.push(`账号 ${account.roleId} 数据格式化失败`);
+                    continue;
                 }
 
                 const image = await Render.render('Template/slash/slash', renderData, {
@@ -108,27 +178,59 @@ export class Slash extends plugin {
                     copyright: `数据来源: 库街区 · 生成时间: ${new Date().toLocaleString()}`
                 });
 
-                data.push({ message: image });
+                await this.recordHaixuRank(e, slashData.data, baseData.data, false);
+
+                rawImageCards.push(image);
+                const buf = this.extractImageBuffer(image);
+                if (buf) {
+                    const isPng = buf[0] === 0x89 && buf[1] === 0x50;
+                    const isJpeg = buf[0] === 0xFF && buf[1] === 0xD8;
+                    const isWebp = buf[0] === 0x52 && buf[1] === 0x49;
+                    if (isPng || isJpeg || isWebp) imageBuffers.push(buf);
+                }
             } catch (err) {
                 logger.error('[冥歌海墟查询异常]', err);
-                data.push({ 
-                    message: `账号 ${account.roleId} 查询异常: ${err.message || '未知错误'}`
-                });
+                errorMessages.push(`账号 ${account.roleId} 查询异常: ${err.message || '未知错误'}`);
             }
-        }));
+        }
 
         if (deleteroleId.length) {
             let newAccountList = accountList.filter(account => !deleteroleId.includes(account.roleId));
             Config.setUserData(e.user_id, newAccountList);
         }
 
-        if (data.length === 1) {
-            await e.reply(data[0].message);
-        } else if (data.length > 1) {
-            await e.reply(await Bot.makeForwardMsg([{ message: `用户 ${e.user_id} 的冥歌海墟查询结果` }, ...data]));
-        } else {
-            await e.reply('没有获取到有效的冥歌海墟数据');
+        if (rawImageCards.length === 0) {
+            const msg = errorMessages.length > 0
+                ? errorMessages.join('\n\n')
+                : '没有获取到有效的冥歌海墟数据';
+            return await e.reply(msg);
         }
+
+        if (errorMessages.length > 0) {
+            await e.reply(errorMessages.join('\n\n'));
+        }
+
+        let finalImage = null;
+        if (imageBuffers.length > 1) {
+            try {
+                finalImage = await this.concatImagesHorizontal(imageBuffers);
+            } catch (err) {
+                logger.mark(logger.blue('[WAVES PLUGIN]'), logger.red(`海墟图片拼接失败: ${err.message}`));
+            }
+        }
+
+        if (!finalImage) {
+            if (rawImageCards.length === 1) {
+                finalImage = rawImageCards[0];
+            } else {
+                for (const card of rawImageCards) {
+                    await e.reply(card);
+                }
+                return true;
+            }
+        }
+
+        await e.reply(finalImage);
         return true;
     }
 
@@ -164,6 +266,8 @@ export class Slash extends plugin {
             retType: 'base64',
             copyright: `数据来源: 库街区 · 生成时间: ${new Date().toLocaleString()}`
         });
+
+        await this.recordHaixuRank(e, slashData.data, baseData.data, isOther);
 
         return await e.reply(image);
     }
@@ -270,6 +374,122 @@ export class Slash extends plugin {
                 return challengeList
                     .sort((a, b) => (b.challengeId || 0) - (a.challengeId || 0))
                     .slice(0, 4);
+        }
+    }
+
+    async recordHaixuRank(e, slashData, baseData, isOther) {
+        try {
+            if (!slashData || !baseData || !baseData.id) return;
+
+            const groupId = e.isGroup ? e.group_id : 'private';
+            const uid = String(baseData.id);
+
+            const DAY_MS = 24 * 3600 * 1000;
+            const seasonEndTime = slashData.seasonEndTime
+                ? Math.floor((Date.now() + slashData.seasonEndTime) / DAY_MS) * DAY_MS
+                : 0;
+
+            const difficulty2 = (slashData.difficultyList || []).find(d => d.difficulty === 2);
+            if (!difficulty2 || !difficulty2.challengeList || difficulty2.challengeList.length === 0) {
+                logger.mark(logger.blue('[WAVES PLUGIN]'), logger.yellow('海墟排名录入: 未找到无尽湍渊数据，跳过录入'));
+                return;
+            }
+
+            const level12 = difficulty2.challengeList.find(
+                c => c.challengeId === 12 || c.challengeName === '无尽湍渊'
+            );
+
+            if (!level12) {
+                logger.mark(logger.blue('[WAVES PLUGIN]'), logger.yellow('海墟排名录入: 未找到无尽湍渊第12关，跳过录入'));
+                return;
+            }
+
+            const rankScore = level12.score || 0;
+
+            if (rankScore === 0) {
+                logger.mark(logger.blue('[WAVES PLUGIN]'), logger.yellow('海墟排名录入: 无尽湍渊分数为0，跳过录入'));
+                return;
+            }
+
+            let avatar = '';
+            try {
+                if (e.isGroup) {
+                    avatar = await e.group.pickMember(e.user_id).getAvatarUrl();
+                } else {
+                    avatar = await e.friend.getAvatarUrl();
+                }
+            } catch {}
+
+            const teamIcons = [];
+            const topTeams = [];
+            const halfList = level12.halfList || [];
+            for (const half of halfList) {
+                if (half.roleList && half.roleList.length > 0) {
+                    const roleIconUrls = half.roleList.map(r => r.iconUrl).filter(Boolean);
+                    topTeams.push({
+                        score: half.score || 0,
+                        roleIcons: roleIconUrls.slice(0, 4),
+                        buffIcons: half.buffIcon ? [{ icon: half.buffIcon, quality: half.buffQuality || 2 }] : []
+                    });
+                    teamIcons.push(...roleIconUrls);
+                }
+            }
+
+            const haixuRank = level12.rank || '';
+            const levelMaxScore = difficulty2.maxScore
+                ? Math.floor(difficulty2.maxScore / (difficulty2.challengeList || []).length)
+                : 0;
+
+            const playerInfo = {
+                name: baseData.name || '鸣潮玩家',
+                uid: uid,
+                avatar: avatar,
+                levelName: '无尽湍渊',
+                rank: haixuRank,           // 海墟游戏内评级
+                levelMaxScore: levelMaxScore, // 关卡满分
+                teamIcons: [...new Set(teamIcons)].slice(0, 8),
+                topTeams: topTeams.slice(0, 2)
+            };
+
+            const isPublicCookie = isOther;
+
+            const scopes = [];
+
+            if (e.isGroup) {
+                const groupEnabled = await HaixuRanking.isHaixuGroupRankingEnabled(groupId);
+                const allowPublic = await HaixuRanking.isHaixuAllowPublicCookie(groupId, 'group');
+                if (groupEnabled && (allowPublic || !isPublicCookie)) {
+                    scopes.push('group');
+                }
+            }
+
+            const globalEnabled = await HaixuRanking.isHaixuGlobalRankingEnabled();
+            const allowPublicGlobal = await HaixuRanking.isHaixuAllowPublicCookie('global', 'global');
+            if (globalEnabled && (allowPublicGlobal || !isPublicCookie)) {
+                scopes.push('global');
+            }
+
+            if (allowPublicGlobal || !isPublicCookie) {
+                scopes.push('bot');
+            }
+
+            if (scopes.length === 0) {
+                logger.mark(logger.blue('[WAVES PLUGIN]'), logger.yellow(`海墟排名录入: 严格模式已开启，跳过未登录用户 ${uid} 的录入`));
+                return;
+            }
+
+            for (const scope of scopes) {
+                const filePath = HaixuRankUtil.getRankFilePath(scope, groupId);
+                if (filePath) {
+                    await HaixuRankUtil.updateRankFile(filePath, uid, rankScore, playerInfo, seasonEndTime);
+                }
+            }
+
+            await HaixuRankUtil.syncToAllGroups(uid, rankScore, playerInfo, seasonEndTime, isPublicCookie);
+
+            logger.mark(logger.blue('[WAVES PLUGIN]'), logger.green(`海墟排名录入: ${baseData.name}(${uid}) 第12关分数 ${rankScore}`));
+        } catch (err) {
+            logger.error('[海墟排名录入异常]', err);
         }
     }
 

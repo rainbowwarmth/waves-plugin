@@ -1,6 +1,6 @@
-import { calcSingleDamage } from '../../../utils/damage/formula.js';
-import { getPercentAttr, normalizeRoleDetailData } from '../../../utils/damage/parser.js';
-import { mergeBuff } from '../../../utils/damage/buff.js';
+import { calcSingleDamage } from '../../../../utils/damage/formula.js';
+import { getPercentAttr, normalizeRoleDetailData } from '../../../../utils/damage/parser.js';
+import { mergeBuff } from '../../../../utils/damage/buff.js';
 
 function getSkillLevel(roleDetailData, typeName) {
   const data = normalizeRoleDetailData(roleDetailData);
@@ -15,16 +15,16 @@ const levelMap = (...values) => values.reduce((map, value, index) => {
 }, {});
 
 // =============================================================
-// 漂泊者-男-衍射
-// 数据来源：库街区 Wiki entryId=1239724074505539584
+// 漂泊者-衍射
+// 数据来源：库街区 Wiki entryId=1242294789908504576
 // 自动从「角色养成 / 技能介绍」倍率表生成，展示倍率最高的 3 个代表输出项。
 // =============================================================
 const WIKI_DETAIL = {
-  "id": "1239724074505539584",
-  "name": "漂泊者-男-衍射",
+  "id": "1242294789908504576",
+  "name": "漂泊者-衍射",
   "orgFullName": "角色组 > 共鸣者",
   "lastUpdateTime": "2025-12-29",
-  "currentVersion": "52.0"
+  "currentVersion": "36.0"
 };
 
 const SKILLS = {
@@ -163,7 +163,7 @@ function calcOneSkill({ roleDetailData, panel, equipment, enemy, modules, option
 }
 
 export default {
-  name: "漂泊者-男-衍射",
+  name: "漂泊者-女-衍射",
   wiki: WIKI_DETAIL,
   skills: SKILLS,
 
@@ -175,6 +175,6 @@ export default {
       "skill11"
     ];
     const items = displayKeys.map(skillKey => calcOneSkill({ ...args, skillKey })).filter(Boolean);
-    return { enemyName: enemy?.name || '无妄者', source: '库街区 Wiki entryId=1239724074505539584', items };
+    return { enemyName: enemy?.name || '无妄者', source: '库街区 Wiki entryId=1242294789908504576', items };
   }
 };

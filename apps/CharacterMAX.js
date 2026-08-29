@@ -6,13 +6,8 @@ import Render from '../components/Render.js';
 import path from 'path';
 import fs from 'fs';
 
-// 漂泊者属性ID映射
-const WAVERIDER_ATTRIBUTES = {
-    '1604': '湮灭', '1605': '湮灭',
-    '1501': '衍射', '1502': '衍射',
-    '1309': '导电', '1310': '导电',
-    '1406': '气动', '1408': '气动'
-};
+import { WAVERIDER_ATTRIBUTES } from '../utils/damage/waveriderMap.js';
+import Zhinengshanghai from '../utils/Zhinengshanghai.js';
 
 export class CharacterMAX extends plugin {
     constructor() {
@@ -75,9 +70,20 @@ export class CharacterMAX extends plugin {
                 data: roleDetailData
             };
 
+            // 保留原始面板数据
+            const rawRoleDetailData = JSON.parse(JSON.stringify(roleDetail.data));
+
             // 计算角色数据和声骸评分
             const calculated = new WeightCalculator(roleDetail.data).calculate();
             roleDetail.data = calculated;
+
+            // 伤害计算
+            const damageResult = await Zhinengshanghai.calc(rawRoleDetailData, {
+                enemyName: '无妄者',
+                enemyLevel: 90,
+                resistance: 0.1,
+                ignoreDefense: 0
+            });
 
             if (!roleDetail.data.weightVersion) {
                 roleDetail.data.weightVersion = '1.0';
@@ -108,6 +114,7 @@ export class CharacterMAX extends plugin {
                 uid: '000000000', 
                 rolePicUrl: rolePicUrl,
                 roleDetail: roleDetail,
+                damageResult: damageResult,
             };
 
             const imageCard = await Render.render('Template/charProfile/charProfile', {

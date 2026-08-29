@@ -2,6 +2,8 @@ import plugin from '../../../lib/plugins/plugin.js';
 import Waves from "../components/Code.js";
 import Config from "../components/Config.js";
 import Render from '../components/Render.js';
+import MatrixRankUtil from '../utils/MatrixRankUtil.js';
+import { MatrixRanking } from './MatrixRanking.js';
 
 export class NewTowerDeta extends plugin {
     constructor() {
@@ -44,13 +46,13 @@ export class NewTowerDeta extends plugin {
             let data = [];
             let deleteroleId = [];
 
-            await Promise.all(accountList.map(async (account) => {
+            for (let account of accountList) {
                 const usability = await waves.isAvailable(account.serverId, account.roleId, account.token, account.did);
 
                 if (!usability) {
                     data.push({ message: `账号 ${account.roleId} 的Token已失效\n请重新登录Token` });
                     deleteroleId.push(account.roleId);
-                    return;
+                    continue;
                 }
 
                 try {
@@ -61,12 +63,12 @@ export class NewTowerDeta extends plugin {
 
                     if (!matrixData?.status) {
                         data.push({ message: `账号 ${account.roleId} ${this.normalizeErrorMsg(matrixData?.msg, false)}` });
-                        return;
+                        continue;
                     }
 
                     if (!matrixData.data || matrixData.data.isUnlock === false) {
                         data.push({ message: `账号 ${account.roleId} 尚未解锁终焉矩阵` });
-                        return;
+                        continue;
                     }
 
                     const renderData = await this.formatData(
@@ -79,7 +81,7 @@ export class NewTowerDeta extends plugin {
 
                     if (!renderData) {
                         data.push({ message: `账号 ${account.roleId} 数据格式化失败` });
-                        return;
+                        continue;
                     }
 
                     const image = await Render.render('Template/newTowerDeta/newTowerDeta', renderData, {
@@ -88,6 +90,9 @@ export class NewTowerDeta extends plugin {
                         copyright: `数据来源: 库街区 · 生成时间: ${new Date().toLocaleString()}`
                     });
 
+                    // 录入矩阵排名数据
+                    await this.recordMatrixRank(e, renderData, false);
+
                     data.push({ message: image });
                 } catch (err) {
                     logger.error('[终焉矩阵查询异常]', err);
@@ -95,7 +100,7 @@ export class NewTowerDeta extends plugin {
                         message: `账号 ${account.roleId} 查询异常: ${err.message || '未知错误'}`
                     });
                 }
-            }));
+            }
 
             if (deleteroleId.length) {
                 let newAccountList = accountList.filter(account => !deleteroleId.includes(account.roleId));
@@ -165,6 +170,8 @@ export class NewTowerDeta extends plugin {
             copyright: `数据来源: 库街区 · 生成时间: ${new Date().toLocaleString()}`
         });
 
+        await this.recordMatrixRank(e, renderData, isOther);
+
         return await e.reply(image);
     }
 
@@ -191,7 +198,7 @@ export class NewTowerDeta extends plugin {
 
             const userInfo = {
                 name: baseData?.name || '鸣潮玩家',
-                uid: baseData?.id || roleId || '',
+                uid: String(baseData?.id || roleId || ''),
                 avatar: await this.getAvatarUrl(e)
             };
 
@@ -211,6 +218,9 @@ export class NewTowerDeta extends plugin {
                     leftTime = `${minutes}分钟`;
                 }
             }
+
+            const DAY_MS = 24 * 3600 * 1000;
+            const seasonEndTime = endTime ? Math.floor((Date.now() + endTime) / DAY_MS) * DAY_MS : 0;
 
             const modeNameMap = {
                 0: '稳态协议',
@@ -253,10 +263,26 @@ export class NewTowerDeta extends plugin {
                     else if (score >= 12000) areaIcon = 'Template/newTowerDeta/imgs/area/B.png';
                 }
 
+                let ratingTier = '';
+                if (mode.modeId === 0) {
+                    if (score >= 10000) ratingTier = 'rating-s';
+                    else if (score >= 7200) ratingTier = 'rating-a';
+                    else if (score >= 4800) ratingTier = 'rating-b';
+                } else if (mode.modeId === 1) {
+                    if (score >= 58000) ratingTier = 'rating-maxc';
+                    else if (score >= 45000) ratingTier = 'rating-maxy';
+                    else if (score >= 37000) ratingTier = 'rating-sss';
+                    else if (score >= 29000) ratingTier = 'rating-ss';
+                    else if (score >= 21000) ratingTier = 'rating-s';
+                    else if (score >= 16000) ratingTier = 'rating-a';
+                    else if (score >= 12000) ratingTier = 'rating-b';
+                }
+
                 return {
                     ...mode,
                     modeName: modeNameMap[mode.modeId] || `模式${mode.modeId}`,
                     areaIcon,
+                    ratingTier,
                     teams,
                     bossProgress,
                     progressPercent,
@@ -264,7 +290,20 @@ export class NewTowerDeta extends plugin {
                 };
             }).sort((a, b) => (a.modeId || 0) - (b.modeId || 0));
 
-            const totalScore = modeDetails.reduce((sum, item) => sum + (item.score || 0), 0);
+            const singularityMode = modeDetails.find(mode => mode.modeId === 1);
+            const singularityScore = singularityMode ? (singularityMode.score || 0) : 0;
+
+            let displayModeDetails;
+            if (singularityScore > 0) {
+                displayModeDetails = modeDetails.filter(mode => mode.modeId === 1);
+            } else {
+                displayModeDetails = modeDetails.filter(mode => mode.modeId === 0);
+            }
+            if (displayModeDetails.length === 0) {
+                displayModeDetails = modeDetails;
+            }
+
+            const totalScore = displayModeDetails.reduce((sum, item) => sum + (item.score || 0), 0);
 
             return {
                 userInfo,
@@ -272,12 +311,99 @@ export class NewTowerDeta extends plugin {
                 reward: matrixData.reward || 0,
                 totalReward: matrixData.totalReward || 0,
                 totalScore,
-                modeDetails,
-                isOther
+                modeDetails: displayModeDetails,
+                isOther,
+                seasonEndTime
             };
         } catch (err) {
             logger.error('[终焉矩阵格式化数据异常]', err);
             return null;
+        }
+    }
+
+    async recordMatrixRank(e, renderData, isOther) {
+        try {
+            if (!renderData || !renderData.userInfo || !renderData.userInfo.uid) return;
+
+            const groupId = e.isGroup ? e.group_id : 'private';
+            const uid = renderData.userInfo.uid;
+            const seasonEndTime = renderData.seasonEndTime || 0;
+
+            const singularityMode = (renderData.modeDetails || []).find(mode => mode.modeId === 1);
+            if (!singularityMode) {
+                logger.mark(logger.blue('[WAVES PLUGIN]'), logger.yellow('矩阵排名录入: 未找到奇点扩张模式数据，跳过录入'));
+                return;
+            }
+
+            const rankScore = singularityMode.score || 0;
+
+            if (rankScore === 0) {
+                logger.mark(logger.blue('[WAVES PLUGIN]'), logger.yellow('矩阵排名录入: 奇点扩张分数为0，跳过录入'));
+                return;
+            }
+
+            const allTeams = (singularityMode.teams || []).slice().sort((a, b) => (b.score || 0) - (a.score || 0));
+            const topTeams = allTeams.slice(0, 2).map(team => ({
+                score: team.score || 0,
+                roleIcons: team.roleIcons || [],
+                buffIcons: (team.buffs || []).map(buff => buff.buffIcon).filter(Boolean)
+            }));
+
+            const teamIcons = [];
+            for (const team of topTeams) {
+                teamIcons.push(...team.roleIcons);
+            }
+
+            const playerInfo = {
+                name: renderData.userInfo.name || '鸣潮玩家',
+                uid: uid,
+                avatar: renderData.userInfo.avatar || '',
+                modeScores: [{
+                    modeName: '奇点扩张',
+                    score: rankScore
+                }],
+                teamIcons: [...new Set(teamIcons)].slice(0, 8),
+                topTeams,
+                teamCount: allTeams.length > 0 ? allTeams.length : null
+            };
+
+            const isPublicCookie = isOther;
+
+            const scopes = [];
+
+            if (e.isGroup) {
+                const groupEnabled = await MatrixRanking.isMatrixGroupRankingEnabled(groupId);
+                const allowPublic = await MatrixRanking.isMatrixAllowPublicCookie(groupId, 'group');
+                if (groupEnabled && (allowPublic || !isPublicCookie)) {
+                    scopes.push('group');
+                }
+            }
+
+            const globalEnabled = await MatrixRanking.isMatrixGlobalRankingEnabled();
+            const allowPublicGlobal = await MatrixRanking.isMatrixAllowPublicCookie('global', 'global');
+            if (globalEnabled && (allowPublicGlobal || !isPublicCookie)) {
+                scopes.push('global');
+            }
+
+            if (allowPublicGlobal || !isPublicCookie) {
+                scopes.push('bot');
+            }
+
+            if (scopes.length === 0) {
+                logger.mark(logger.blue('[WAVES PLUGIN]'), logger.yellow(`矩阵排名录入: 严格模式已开启，跳过未登录用户 ${uid} 的录入`));
+                return;
+            }
+
+            for (const scope of scopes) {
+                const filePath = MatrixRankUtil.getRankFilePath(scope, groupId);
+                if (filePath) {
+                    await MatrixRankUtil.updateRankFile(filePath, uid, rankScore, playerInfo, seasonEndTime);
+                }
+            }
+
+            await MatrixRankUtil.syncToAllGroups(uid, rankScore, playerInfo, seasonEndTime, isPublicCookie);
+        } catch (err) {
+            logger.error('[矩阵排名录入异常]', err);
         }
     }
 
